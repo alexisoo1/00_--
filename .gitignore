@@ -7,3 +7,4 @@ data/**/*.*
 .project
 *.db
 *pycache*/**/*
+*.dbeaver
