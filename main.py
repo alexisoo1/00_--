@@ -39,7 +39,7 @@ with open(okved, 'r', encoding='UTF-8') as f:
     data = json.load(f)
     print(type(data))
 
-tools.createDB(_db = config.dbName, _recreateDB = True)
+tools.createDB(_db = config.dbName, _recreateDB = False)
 
 if not tools.checkExistsTable(_table = 'status'):
     tools.createStatusTable(_recreateTable = False)
