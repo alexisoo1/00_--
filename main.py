@@ -7,6 +7,9 @@ import pandas as pd
 import zipfile
 from pathlib import Path
 import csv
+import sys
+import tools
+from datetime import datetime
 logger = logging.getLogger(__name__)
 logger.setLevel(config.loggerLevel)
 lfm = logging.Formatter(config.formatter)
@@ -19,33 +22,177 @@ lfh.setLevel(config.fileLogHandlerLevel)
 logger.addHandler(lsh)
 logger.addHandler(lfh)
 
-def getDbConnection():
-    con = sl.connect(database=config.dbName, timeout=config.timeOut, detect_types=sl.PARSE_DECLTYPES | sl.PARSE_COLNAMES)
-    return con
+print(f"Начато {datetime.now()}")
+logger.info(f"Начато {datetime.now()}")
 
 okvedZip = Path(config.dataDir, config.okvedZip)
+okved = Path(config.dataDir, Path(config.okvedZip).stem, config.okved)
+okvedPath = Path(config.dataDir, Path(config.okvedZip).stem)
 with zipfile.ZipFile(file=okvedZip, mode='r') as zipObj:
     files = zipObj.namelist()
     print(files)
-    zipObj.extract(config.okved, path=config.dataDir)
-
-okved = Path(config.dataDir, config.okved)
-# with open(okved, 'r', encoding='UTF-8') as csv_file: #encoding='UTF-8'  Windows-1251
-#     csv_reader = csv.reader(csv_file, delimiter=',')
-#     for row in csv_reader:
-#         print(row)
+    zipObj.extract(config.okved, path=okvedPath)
 
 with open(okved, 'r', encoding='UTF-8') as f:
-    df = pd.read_json(f)
-    df.info()
-    #data = json.load(f)
-    #print(type(data))
+    #df = pd.read_json(f)
+    #df.info()
+    data = json.load(f)
+    print(type(data))
 
-con = getDbConnection()
+tools.createDB(_db = config.dbName, _recreateDB = False)
+
+if not tools.checkExistsTable(_table = 'status'):
+    tools.createStatusTable(_recreateTable = False)
+else:
+    logger.info('Table status already exists')
+#tools.createStatusTable(_recreateTable = True)
+
+if not tools.checkExistsTable(_table = 'journal'):
+    tools.createJournalTable(_recreateTable = False)
+else:
+    logger.info('Table journal already exists')
+#tools.createJournalTable(_recreateTable = True)
+
+if not tools.checkExistsTable(_table = 'okved'):
+    tools.createOkvedTable(_recreateTable = False)
+else:
+    logger.info('Table okved already exists')
+#tools.createOkvedTable(_recreateTable = True)
+
+if not tools.checkExistsTable(_table = 'teltecom_companies'):
+    tools.createTelecom_companiesTable(_recreateTable = False)
+else:
+    logger.info('Table teltecom_companies already exists')
+#tools.createTelecom_companiesTable(_recreateTable = True)
+
+con = tools.getDbConnection()
 cursor = con.cursor()
 try:
-    df.to_sql('okved', con)
+    table = 'okved'    
+    sql = f"insert into {table}(code, parent_code, section, name, comment) values(:code, :parent_code, :section, :name, :comment)"
+    con.executemany(sql, data)
+    con.commit()
+    pass
 except Exception as err:
     print(f"{err}")
+    con.rollback()
 finally:
     con.close()
+
+egrulZip = Path(config.dataDir, config.egrulZip)
+egrulPath = Path(config.dataDir, Path(config.egrulZip).stem)
+try:
+    con = tools.getDbConnection()
+    sqlCheck = "select started, unzipped, processed from status"
+    data = con.execute(sqlCheck).fetchone()
+    (started, unzipped, processed) = tuple(data)
+    if started == 0:
+        sql = f"update status set started = 1"
+        con.execute(sql)        
+        zipObj = zipfile.ZipFile(file=egrulZip, mode='r')
+        files = zipObj.namelist()
+        files = [[x] for x in files]
+        sqlNames = f"insert into journal (id) values(?)"
+        con.executemany(sqlNames, files)
+        con.commit()
+except Exception as err:
+    print(err)
+    con.rollback()
+    sys.exit()
+finally:
+    con.close()
+
+if processed == 1:
+    print('Уже все обработано')
+    sys.exit()
+
+if unzipped == 0:
+    try:        
+        zipObj = zipfile.ZipFile(file=egrulZip, mode='r')
+        con = tools.getDbConnection()
+        sql = "select id from journal where unzipped = 0"
+        files = con.execute(sql).fetchall()
+        files = [x[0] for x in files]
+        ff = zipObj.namelist()
+        for file in files:
+            res = zipObj.extract(file, path=egrulPath)
+            sql = f"update journal set unzipped = 1 where id = '{file}'"
+            con.execute(sql)
+            con.commit()
+        sql = "select id from journal where unzipped = 0"
+        files = con.execute(sql).fetchall()
+        if len(files) == 0:
+            sqlEnd = "update status set unzipped = 1"
+            con.execute(sqlEnd)
+            con.commit()
+    except Exception as err:
+        print(err)
+        con.rollback()
+        sys.exit()
+    finally:            
+        con.close()
+         
+try:
+    con = tools.getDbConnection()
+    sql = "select id from journal where processed = 0"
+    files = con.execute(sql).fetchall()
+    files = [x[0] for x in files]
+    for file in files:
+        ff = Path(egrulPath, file)
+        with open(Path(egrulPath, file), 'r', encoding='UTF-8') as f:
+            data = json.load(f)
+            print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!   {file}")
+            insertList = []
+            print(type(data))
+            for d in data:
+                print(d.get('name',''))
+                isTelecom = False
+                dt = d.get('data',{})
+                svOkved = dt.get('СвОКВЭД',{})
+                svOkvedOsn = svOkved.get('СвОКВЭДОсн',{})
+                code = svOkvedOsn.get('КодОКВЭД', '')    
+                osn = False            
+                if code != '' and code[:2] == '61':
+                    print('!!!!!!!!!!1')
+                    isTelecom = True
+                    osn = True
+                else:
+                    codeDopList = svOkved.get('СвОКВЭДДоп', [])
+                    aa = type(codeDopList)
+                    if isinstance(codeDopList, list):
+                        codes = []
+                        for l in codeDopList:
+                            code = l.get('КодОКВЭД', '')
+                            st = code[:2]
+                            if code != '' and code[:2] == '61':
+                                print('!!!!!!!!!!1')
+                                isTelecom = True                            
+                                break
+                    elif isinstance(codeDopList, dict):
+                        code = codeDopList.get('КодОКВЭД', '')
+                        st = code[:2]
+                        if code != '' and code[:2] == '01':
+                            print('!!!!!!!!!!1')
+                            isTelecom = True        
+                if isTelecom:
+                    insertList.append([d.get('ogrn',''),d.get('inn',''),d.get('kpp',''),d.get('name',''),d.get('full_name',''),code])
+            if len(insertList) > 0:
+                sql = "insert into telecom_companies (ogrn,inn,kpp,name,full_name, okved) values(?,?,?,?,?,?)"
+                con.executemany(sql, insertList)                
+            sql = f"update journal set processed = 1 where id = '{file}'"
+            con.execute(sql)
+            con.commit()
+    sql = "select id from journal where processed = 0"
+    files = con.execute(sql).fetchall()
+    if len(files) == 0:
+        sqlEnd = "update status set processed = 1"
+        con.execute(sqlEnd)
+        con.commit()
+except Exception as err:
+    print(err)
+    con.rollback()
+    sys.exit()
+finally:            
+    con.close()
+    print(f"Завершено {datetime.now()}")
+    logger.info(f"Завершено {datetime.now()}")
